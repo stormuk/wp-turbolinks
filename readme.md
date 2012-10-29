@@ -19,7 +19,7 @@ Go to the plugins page and activate it.
 Warnings
 ========
 
-For Turbolinks to work you have to write your JavaScript in a particular way.  There are several articles popping up describing the problem and potential solutions to them.  This article from Yehuda Katz sums it up pretty well: https://plus.google.com/106300407679257154689/posts/A65agXRynUn.
+For Turbolinks to work you have to write your JavaScript in a certain way, in particular, document ready events have to be idempotent.  There are several articles popping up describing the problem and potential solutions to them.  This article from Yehuda Katz sums it up pretty well: https://plus.google.com/106300407679257154689/posts/A65agXRynUn.
 
 Please make sure you read about the pros and cons of Turbolinks before installing it on your site.  You may have to make significant changes to your JavaScript for it to work well.
 
