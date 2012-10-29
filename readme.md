@@ -15,7 +15,6 @@ Download a zip of the repository and put in a *wp-turbolinks* directory inside
 
 Go to the plugins page and activate it.
 
-
 Warnings
 ========
 
