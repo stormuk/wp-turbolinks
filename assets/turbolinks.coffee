@@ -1,9 +1,11 @@
 initialized    = false
 currentState   = null
 referer        = document.location.href
-assets         = []
-pageCache      = []
+loadedAssets   = null
+pageCache      = {}
 createDocument = null
+requestMethod  = document.cookie.match(/request_method=(\w+)/)?[1].toUpperCase() or ''
+xhr            = null
 
 visit = (url) ->
   if browserSupportsPushState
@@ -17,8 +19,12 @@ visit = (url) ->
 fetchReplacement = (url) ->
   triggerEvent 'page:fetch'
 
+  # Remove hash from url to ensure IE 10 compatibility
+  safeUrl = removeHash url
+
+  xhr?.abort()
   xhr = new XMLHttpRequest
-  xhr.open 'GET', url, true
+  xhr.open 'GET', safeUrl, true
   xhr.setRequestHeader 'Accept', 'text/html, application/xhtml+xml, application/xml'
   xhr.setRequestHeader 'X-XHR-Referer', referer
 
@@ -26,14 +32,19 @@ fetchReplacement = (url) ->
     doc = createDocument xhr.responseText
 
     if assetsChanged doc
-      document.location.href = url
+      document.location.reload()
     else
       changePage extractTitleAndBody(doc)...
       reflectRedirectedUrl xhr
-      resetScrollPosition()
+      if document.location.hash
+        document.location.href = document.location.href
+      else
+        resetScrollPosition()
       triggerEvent 'page:load'
 
-  xhr.onabort = -> console.log 'Aborted turbolink fetch!'
+  xhr.onloadend = -> xhr = null
+  xhr.onabort   = -> rememberCurrentUrl()
+  xhr.onerror   = -> document.location.href = url
 
   xhr.send()
 
@@ -41,6 +52,7 @@ fetchHistory = (state) ->
   cacheCurrentPage()
 
   if page = pageCache[state.position]
+    xhr?.abort()
     changePage page.title, page.body
     recallScrollPosition page
     triggerEvent 'page:restore'
@@ -61,17 +73,24 @@ cacheCurrentPage = ->
   constrainPageCacheTo(10)
 
 constrainPageCacheTo = (limit) ->
-  delete pageCache[currentState.position - limit]
+  for own key, value of pageCache
+    pageCache[key] = null if key <= currentState.position - limit
 
-changePage = (title, body) ->
+changePage = (title, body, runScripts) ->
   document.title = title
   document.documentElement.replaceChild body, document.body
-  executeScriptTags()
+  executeScriptTags() if runScripts
   currentState = window.history.state
   triggerEvent 'page:change'
 
 executeScriptTags = ->
-  eval(script.innerHTML) for script in document.body.getElementsByTagName 'script' when script.type in ['', 'text/javascript']
+  for script in document.body.getElementsByTagName 'script' when script.type in ['', 'text/javascript']
+    copy = document.createElement 'script'
+    copy.setAttribute attr.name, attr.value for attr in script.attributes
+    copy.appendChild document.createTextNode script.innerHTML
+    { parentNode, nextSibling } = script
+    parentNode.removeChild script
+    parentNode.insertBefore copy, nextSibling
 
 
 reflectNewUrl = (url) ->
@@ -80,17 +99,14 @@ reflectNewUrl = (url) ->
     window.history.pushState { turbolinks: true, position: currentState.position + 1 }, '', url
 
 reflectRedirectedUrl = (xhr) ->
-  if (location = xhr.getResponseHeader('X-XHR-Current-Location'))
-    window.history.replaceState currentState, '', location
+  if (location = xhr.getResponseHeader 'X-XHR-Current-Location') and location isnt document.location.pathname + document.location.search
+    window.history.replaceState currentState, '', location + document.location.hash
 
 rememberCurrentUrl = ->
-  window.history.replaceState { turbolinks: true, position: window.history.length - 1 }, '', document.location.href
+  window.history.replaceState { turbolinks: true, position: Date.now() }, '', document.location.href
 
 rememberCurrentState = ->
   currentState = window.history.state
-
-rememberCurrentAssets = ->
-  assets = extractAssets document
 
 rememberInitialPage = ->
   unless initialized
@@ -105,6 +121,13 @@ recallScrollPosition = (page) ->
 resetScrollPosition = ->
   window.scrollTo 0, 0
 
+removeHash = (url) ->
+  link = url
+  unless url.href?
+    link = document.createElement 'A'
+    link.href = url
+  link.href.replace link.hash, ''
+
 
 triggerEvent = (name) ->
   event = document.createEvent 'Events'
@@ -112,11 +135,13 @@ triggerEvent = (name) ->
   document.dispatchEvent event
 
 
-extractAssets = (doc) ->
-  (node.src || node.href) for node in doc.head.childNodes when node.src or node.href
+extractTrackAssets = (doc) ->
+  (node.src || node.href) for node in doc.head.childNodes when node.getAttribute?('data-turbolinks-track')?
 
-assetsChanged = (doc)->
-  intersection(extractAssets(doc), assets).length != assets.length
+assetsChanged = (doc) ->
+  loadedAssets ||= extractTrackAssets document
+  fetchedAssets  = extractTrackAssets doc
+  fetchedAssets.length isnt loadedAssets.length or intersection(fetchedAssets, loadedAssets).length isnt loadedAssets.length
 
 intersection = (a, b) ->
   [a, b] = [b, a] if a.length > b.length
@@ -124,7 +149,7 @@ intersection = (a, b) ->
 
 extractTitleAndBody = (doc) ->
   title = doc.querySelector 'title'
-  [ title?.textContent, doc.body ]
+  [ title?.textContent, doc.body, 'runScripts' ]
 
 browserCompatibleDocumentParser = ->
   createDocumentUsingParser = (html) ->
@@ -134,7 +159,7 @@ browserCompatibleDocumentParser = ->
     doc = document.implementation.createHTMLDocument ''
     doc.open 'replace'
     doc.write html
-    doc.close
+    doc.close()
     doc
 
   if window.DOMParser
@@ -161,17 +186,14 @@ handleClick = (event) ->
 
 extractLink = (event) ->
   link = event.target
-  link = link.parentNode until link is document or link.nodeName is 'A'
+  link = link.parentNode until !link.parentNode or link.nodeName is 'A'
   link
-
-samePageLink = (link) ->
-  link.href is document.location.href
 
 crossOriginLink = (link) ->
   location.protocol isnt link.protocol or location.host isnt link.host
 
 anchoredLink = (link) ->
-  ((link.hash and link.href.replace(link.hash, '')) is location.href.replace(location.hash, '')) or
+  ((link.hash and removeHash(link)) is removeHash(location)) or
     (link.href is location.href + '#')
 
 nonHtmlLink = (link) ->
@@ -183,22 +205,33 @@ noTurbolink = (link) ->
     link = link.parentNode
   ignore
 
+targetLink = (link) ->
+  link.target.length isnt 0
+
 nonStandardClick = (event) ->
   event.which > 1 or event.metaKey or event.ctrlKey or event.shiftKey or event.altKey
 
 ignoreClick = (event, link) ->
-  crossOriginLink(link) or anchoredLink(link) or nonHtmlLink(link) or noTurbolink(link) or nonStandardClick(event)
+  crossOriginLink(link) or anchoredLink(link) or nonHtmlLink(link) or noTurbolink(link) or targetLink(link) or nonStandardClick(event)
 
+
+initializeTurbolinks = ->
+  document.addEventListener 'click', installClickHandlerLast, true
+  window.addEventListener 'popstate', (event) ->
+    fetchHistory event.state if event.state?.turbolinks
 
 browserSupportsPushState =
   window.history and window.history.pushState and window.history.replaceState and window.history.state != undefined
 
-if browserSupportsPushState
-  rememberCurrentAssets()
-  document.addEventListener 'click', installClickHandlerLast, true
+browserIsntBuggy =
+  !navigator.userAgent.match /CriOS\//
 
-  window.addEventListener 'popstate', (event) ->
-    fetchHistory event.state if event.state?.turbolinks
+requestMethodIsSafe =
+  requestMethod in ['GET','']
+
+initializeTurbolinks() if browserSupportsPushState and browserIsntBuggy and requestMethodIsSafe
 
 # Call Turbolinks.visit(url) from client code
 @Turbolinks = { visit }
+Window size: x 
+Viewport size: x
