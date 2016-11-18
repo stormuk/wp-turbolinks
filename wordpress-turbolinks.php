@@ -15,7 +15,7 @@ function enqueue_turbolinks() {
 
     //var_dump(plugin_dir_url(__FILE__));
 
-    $dir = get_option('siteurl') .'/wp-content/plugins/' . basename(dirname(__FILE__)) .'/';
+    $dir = content_url() . '/plugins/' . basename(dirname(__FILE__)) .'/';
 
     wp_register_script('turbolinks', $dir . 'assets/turbolinks.js');
     wp_enqueue_script('turbolinks');
